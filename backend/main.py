@@ -23,7 +23,8 @@ from psycopg_pool import ConnectionPool
 from psycopg.rows import tuple_row
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.config import load_config
@@ -36,6 +37,7 @@ CENT = Decimal("0.01")
 
 _pool: ConnectionPool | None = None
 _pool_url = ""
+FRONTEND_DIST = Path(__file__).resolve().parents[1] / "dist"
 
 
 @asynccontextmanager
@@ -64,6 +66,11 @@ app.add_middleware(
     allow_origins=list(dict.fromkeys([CONFIG.frontend_origin, "http://localhost:5173"])),
     allow_methods=["*"],
     allow_headers=["*"],
+)
+app.mount(
+    "/assets",
+    StaticFiles(directory=FRONTEND_DIST / "assets", check_dir=False),
+    name="frontend-assets",
 )
 
 
@@ -850,3 +857,22 @@ def report_pdf(import_id: str):
     buffer.seek(0)
     return StreamingResponse(buffer, media_type="application/pdf",
                              headers={"Content-Disposition": f'attachment; filename="spendsense-{import_id[:8]}.pdf"'})
+
+
+def frontend_index():
+    index_path = FRONTEND_DIST / "index.html"
+    if not index_path.is_file():
+        raise HTTPException(503, "The frontend build is unavailable.")
+    return FileResponse(index_path)
+
+
+@app.get("/", include_in_schema=False)
+def frontend_root():
+    return frontend_index()
+
+
+@app.get("/{path:path}", include_in_schema=False)
+def frontend_route(path: str):
+    if path == "api" or path.startswith("api/"):
+        raise HTTPException(404, "API endpoint not found.")
+    return frontend_index()

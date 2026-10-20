@@ -25,6 +25,23 @@ SpendSense is a responsive, local single-user statement-analysis application. It
 
 3. Open `http://127.0.0.1:5173`. The API health endpoint is `http://127.0.0.1:8000/api/health`.
 
+The Vite development server proxies `/api` requests to the local FastAPI server. In production, the frontend uses relative `/api` URLs and FastAPI serves the built `dist/` files on the same origin.
+
+## Deploy one Render web service
+
+The root `render.yaml` configures a single Docker-based web service. Render builds the existing Vite production frontend in the Docker build stage, installs the backend requirements, and starts Uvicorn on Render's `PORT`. `/api/health` is the service health check. No deployment or external service changes are performed by these repository files.
+
+Set optional provider/database values in the Render service's environment settings; do not commit `.env` or include secrets in the Docker build context. The existing `DATABASE_URL`, `DATABASE_PATH`, Groq, and AI variable names are unchanged. Render's local filesystem is ephemeral unless a persistent disk is attached. For durable storage, configure PostgreSQL through `DATABASE_URL` or explicitly configure a persistent disk and place `DATABASE_PATH` on its mount path. This setup does not copy or migrate existing SQLite data.
+
+The Docker image can also be built and run locally with:
+
+```powershell
+docker build -t spendsense .
+docker run --rm -p 8000:10000 -e PORT=10000 spendsense
+```
+
+The container starts with `python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-10000}`. Render supplies `PORT` automatically.
+
 The local SQLite database is created at `backend/spendsense.db`. It contains private imported transaction data; do not commit it. The application has no authentication and is for local, single-user development only. Do not expose the API or database to a network or deploy as a multi-user service without implementing and verifying authentication, authorization, isolation, HTTPS, and production storage/retention controls.
 
 For a new setup, copy `.env.example` to the root `.env` only if `.env` does not already exist; do not overwrite existing local configuration. The backend resolves `.env` from the project root, independent of the shell's working directory. Keep `.env` private and never commit it. Missing AI credentials and an empty `DATABASE_URL` are supported; local development uses SQLite.

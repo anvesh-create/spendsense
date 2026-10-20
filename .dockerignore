@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.git
+node_modules
+dist
+*.db
+*.sqlite
+*.sqlite3
+backend/uploads/
+backend/reports/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+reference-images/

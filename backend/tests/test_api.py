@@ -38,6 +38,39 @@ def test_import_overview_and_transaction_totals(client):
     assert rows["items"][0]["description"] == "Metro Recharge"
 
 
+def test_frontend_root_serves_built_index(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert '<div id="root"></div>' in response.text
+
+
+def test_frontend_asset_is_served(client):
+    response = client.get("/assets/compass-logo.png")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/png")
+    assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_frontend_route_falls_back_to_index_but_unknown_api_stays_404(client):
+    page = client.get("/overview")
+    missing_api = client.get("/api/not-a-route")
+
+    assert page.status_code == 200
+    assert page.headers["content-type"].startswith("text/html")
+    assert '<div id="root"></div>' in page.text
+    assert missing_api.status_code == 404
+
+
+def test_health_endpoint_remains_json(client):
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "mode": "local-single-user"}
+
+
 def test_analytics_categories_and_monthly_totals_exclude_transfers(client):
     content = (
         b"Date,Description,Debit,Credit\n"

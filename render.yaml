@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: spendsense
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
