@@ -384,6 +384,104 @@ def records_from_rows(rows: list[list[Any]]) -> tuple[list[dict[str, Any]], list
     raise ValueError("Could not identify date, description, and amount columns. Use a CSV/XLSX with recognizable transaction headers.")
 
 
+PAYTM_REQUIRED_HEADERS = {
+    "transactionid", "date", "accountnumber", "transactiontype",
+    "description", "amountinr", "status",
+}
+PAYTM_SUMMARY_LABELS = {
+    "statementperiod", "statementstartdate", "statementenddate", "startdate", "enddate",
+    "fromdate", "todate", "debittotal", "totaldebit", "credittotal", "totalcredit",
+    "transactioncount", "totaltransactions", "debitamounttotal", "totaldebitamount",
+    "creditamounttotal", "totalcreditamount",
+}
+
+
+def paytm_header(rows: list[list[Any]]) -> tuple[int, dict[str, int]] | None:
+    for header_index, row in enumerate(rows[:16]):
+        normalized = [norm_header(str(value or "")) for value in row]
+        if len(normalized) != len(set(normalized)):
+            continue
+        if PAYTM_REQUIRED_HEADERS.issubset(normalized):
+            return header_index, {name: normalized.index(name) for name in PAYTM_REQUIRED_HEADERS}
+    return None
+
+
+def paytm_records_from_rows(
+    rows: list[list[Any]], header_index: int, columns: dict[str, int],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    warnings: list[str] = []
+    output: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    summary_found = any(
+        row and norm_header(str(row[0] or "").split(":", 1)[0]) in PAYTM_SUMMARY_LABELS
+        for row in rows[:header_index]
+    )
+    required_width = max(columns.values()) + 1
+
+    for row_no, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
+        values = [str(value or "").strip() for value in row]
+        if not any(values):
+            continue
+        label = norm_header(values[0].split(":", 1)[0])
+        if label in PAYTM_SUMMARY_LABELS:
+            summary_found = True
+            continue
+        if len(values) < required_width:
+            warnings.append(f"Skipped Paytm row {row_no}: incomplete row.")
+            continue
+        tx_type = values[columns["transactiontype"]].casefold()
+        date_value = values[columns["date"]]
+        if not date_value or tx_type not in {"debit", "credit"}:
+            warnings.append(f"Skipped Paytm row {row_no}: missing date or unrecognized transaction type.")
+            continue
+
+        transaction_id = values[columns["transactionid"]]
+        description = re.sub(r"\s+", " ", values[columns["description"]]).strip()
+        status = values[columns["status"]].casefold()
+        if not transaction_id or not description:
+            warnings.append(f"Skipped Paytm row {row_no}: missing transaction ID or description.")
+            continue
+        if status not in {"completed", "success", "successful"}:
+            warnings.append(f"Skipped Paytm row {row_no}: transaction status is not completed.")
+            continue
+        if transaction_id in seen_ids:
+            warnings.append(f"Duplicate Paytm transaction ID at row {row_no} was skipped.")
+            continue
+
+        try:
+            tx_date = parse_date(date_value)
+            amount = abs(money(values[columns["amountinr"]]))
+        except ValueError:
+            warnings.append(f"Skipped Paytm row {row_no}: invalid date or amount.")
+            continue
+
+        amount = amount if tx_type == "credit" else -amount
+        category, merchant = categorize(description)
+        if category == "Income" and amount < 0:
+            category = "Other"
+        if category == "Transfer":
+            warnings.append(f"Paytm row {row_no} appears to be a transfer and is excluded from net income/expense totals.")
+        output.append({
+            "date": tx_date,
+            "description": description[:300],
+            "merchant": merchant,
+            "category": category,
+            "amount": str(amount.quantize(CENT)),
+            "currency": "INR",
+        })
+        seen_ids.add(transaction_id)
+
+    if not summary_found:
+        warnings.append("Paytm statement has no period or debit/credit summary totals to reconcile.")
+    else:
+        warnings.append("Paytm summary rows were found but could not be reconciled.")
+    if not output:
+        raise ValueError("No valid transactions were found in the Paytm statement.")
+    if len(output) == 1:
+        warnings.append("Only one Paytm transaction was parsed; verify that the uploaded file is complete.")
+    return output, sorted(set(warnings))
+
+
 def parse_upload(filename: str, content: bytes) -> tuple[list[dict[str, Any]], list[str]]:
     ext = Path(filename.lower()).suffix
     if ext not in {".csv", ".xlsx", ".xls", ".pdf"}:
@@ -405,7 +503,11 @@ def parse_upload(filename: str, content: bytes) -> tuple[list[dict[str, Any]], l
             dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
         except csv.Error:
             dialect = csv.excel
-        return records_from_rows(list(csv.reader(io.StringIO(text), dialect)))
+        rows = list(csv.reader(io.StringIO(text), dialect))
+        paytm_columns = paytm_header(rows)
+        if paytm_columns is not None:
+            return paytm_records_from_rows(rows, *paytm_columns)
+        return records_from_rows(rows)
     if ext in {".xlsx", ".xls"}:
         if ext == ".xls":
             raise ValueError("Legacy .xls is not supported in this build. Save the statement as .xlsx or .csv.")
@@ -528,6 +630,12 @@ async def upload_statement(file: UploadFile = File(...), currency: str = Form("I
         transactions, warnings = parse_upload(filename, content)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    statement_currencies = {row.get("currency", currency) for row in transactions}
+    if len(statement_currencies) != 1:
+        raise HTTPException(422, "The statement contains inconsistent transaction currencies.")
+    statement_currency = statement_currencies.pop()
+    if statement_currency != currency:
+        raise HTTPException(422, f"This statement uses {statement_currency}. Choose that currency before importing.")
     content_hash = hashlib.sha256(content).hexdigest()
     with db() as conn:
         duplicate = conn.execute("SELECT id FROM imports WHERE content_hash=?", (content_hash,)).fetchone()
@@ -539,12 +647,12 @@ async def upload_statement(file: UploadFile = File(...), currency: str = Form("I
     prepared = []
     for row in transactions:
         fingerprint = hashlib.sha256(f"{row['date']}|{row['description'].lower()}|{row['amount']}".encode()).hexdigest()
-        prepared.append((str(uuid.uuid4()), import_id, row["date"], row["description"], row["merchant"], row["category"], row["amount"], currency, fingerprint))
+        prepared.append((str(uuid.uuid4()), import_id, row["date"], row["description"], row["merchant"], row["category"], row["amount"], statement_currency, fingerprint))
     try:
         with db() as conn:
             conn.execute(
                 "INSERT INTO imports(id,filename,imported_at,start_date,end_date,currency,transaction_count,warnings,content_hash) VALUES(?,?,?,?,?,?,?,?,?)",
-                (import_id, filename, imported_at, min(dates), max(dates), currency, len(prepared), json.dumps(sorted(set(warnings))), content_hash),
+                (import_id, filename, imported_at, min(dates), max(dates), statement_currency, len(prepared), json.dumps(sorted(set(warnings))), content_hash),
             )
             conn.executemany("INSERT INTO transactions(id,import_id,tx_date,description,merchant,category,amount,currency,fingerprint) VALUES(?,?,?,?,?,?,?,?,?)", prepared)
     except (sqlite3.IntegrityError, UniqueViolation) as exc:

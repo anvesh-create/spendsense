@@ -1,0 +1,8 @@
+Transaction_ID,Date,Account_Number,Transaction_Type,Description,Amount_INR,Balance_INR,Status
+TXN-001,2026-01-01,ACCOUNT_1,Debit,Paid to <PARTY_1> (<SYMBOL><SYMBOL> <PARTY_2>),10.0,,Completed
+TXN-002,2026-01-02,ACCOUNT_1,Credit,<PARTY_3> <PARTY_4> (Money Received),20.0,,Completed
+TXN-003,2026-01-02,ACCOUNT_1,Credit,"Cashback Received from <PARTY_5>"",""<REFERENCE_1> (Cashback)",20.0,,Completed
+TXN-004,2026-01-02,ACCOUNT_1,Credit,"Cashback Received from <PARTY_5>"",""<REFERENCE_1> (Cashback)",20.0,,Completed
+TXN-005,2026-01-02,ACCOUNT_1,Credit,"Cashback Received from <PARTY_5>"",""<REFERENCE_1> (Cashback)",20.0,,Completed
+TXN-006,2026-01-03,ACCOUNT_1,Credit,Received from <PARTY_6> <PARTY_7> (Money Received),20.0,,Completed
+TXN-007,2026-01-03,ACCOUNT_1,Credit,Received from <PARTY_6> <PARTY_7> (Money Received),20.0,,Completed

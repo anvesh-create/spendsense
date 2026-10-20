@@ -3,6 +3,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,6 +20,7 @@ def client(tmp_path, monkeypatch):
 
 
 SAMPLE = b"Date,Description,Debit,Credit\n2026-10-01,Coffee Shop,250.50,\n2026-10-02,Monthly Salary,,50000.00\n2026-10-03,Metro Recharge,100,\n"
+PAYTM_SAMPLE = (Path(__file__).parent / "fixtures" / "paytm_sample_anonymized.csv").read_bytes()
 
 
 def upload(client, content=SAMPLE, filename="statement.csv"):
@@ -83,6 +85,56 @@ def test_import_overview_and_transaction_totals(client):
     }
     assert {row["currency"] for row in rows["items"]} == {"INR"}
     assert rows["items"][0]["description"] == "Metro Recharge"
+
+
+def test_paytm_import_preserves_direction_currency_and_distinct_transactions(client):
+    response = upload(client, PAYTM_SAMPLE, "paytm.csv")
+
+    assert response.status_code == 200, response.text
+    imported = response.json()
+    transactions = client.get("/api/transactions", params={"import_id": imported["id"]}).json()
+
+    assert imported["currency"] == "INR"
+    assert imported["transaction_count"] == 7
+    assert transactions["total"] == 7
+    assert sum(row["amount"] == "-10.00" for row in transactions["items"]) == 1
+    assert sum(row["amount"] == "20.00" for row in transactions["items"]) == 6
+    assert {row["currency"] for row in transactions["items"]} == {"INR"}
+    assert any('"' in row["description"] and "," in row["description"] for row in transactions["items"])
+    assert imported["summary"]["expenses"] == "10.00"
+    assert imported["summary"]["income"] == "120.00"
+    assert imported["summary"]["net_flow"] == "110.00"
+    assert any("no period or debit/credit summary totals" in warning for warning in imported["warnings"])
+
+
+def test_paytm_import_rejects_currency_mismatch(client):
+    response = client.post(
+        "/api/imports",
+        data={"currency": "USD"},
+        files={"file": ("paytm.csv", PAYTM_SAMPLE, "text/csv")},
+    )
+
+    assert response.status_code == 422
+    assert "uses INR" in response.json()["detail"]
+    assert client.get("/api/imports").json() == []
+
+
+def test_paytm_import_skips_rows_with_unknown_transaction_type(client):
+    malformed = PAYTM_SAMPLE.replace(b",Debit,", b",Unknown,", 1)
+    response = upload(client, malformed, "paytm.csv")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["transaction_count"] == 6
+    assert any("unrecognized transaction type" in warning for warning in response.json()["warnings"])
+
+
+def test_paytm_import_skips_repeated_transaction_ids(client):
+    repeated = PAYTM_SAMPLE + PAYTM_SAMPLE.splitlines()[1] + b"\n"
+    response = upload(client, repeated, "paytm.csv")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["transaction_count"] == 7
+    assert any("Duplicate Paytm transaction ID" in warning for warning in response.json()["warnings"])
 
 
 def test_csv_upload_persists_all_transactions_through_postgres_adapter(client, monkeypatch):

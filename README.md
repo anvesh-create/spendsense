@@ -76,10 +76,11 @@ To verify Groq without spending credits, use the mocked backend tests. A real pr
 ## Statement support and limitations
 
 - CSV with recognizable date, description/narration, and amount or debit/credit columns.
+- Paytm CSV transaction tables with `Transaction_ID`, `Date`, `Account_Number`, `Transaction_Type`, `Description`, `Amount_INR`, and `Status` columns. Debit/credit direction comes from `Transaction_Type`, and transaction IDs distinguish separate payments with otherwise identical details.
 - XLSX files with those recognizable columns.
 - Text-based PDF statements where transaction rows can be reliably extracted as a date, description, and final amount.
-- Legacy `.xls`, scanned PDFs/OCR, and bank-specific layouts that do not match supported structures are rejected with an explanation. Support is not universal. If amount semantics or columns are ambiguous, verify the exported statement columns instead of relying on guessed mappings.
-- The selected currency (default from Settings) is assigned to an import; check it matches the statement before processing. Identical file bytes cannot be imported twice. Exact duplicate transaction rows within an imported file are skipped with a warning.
+- Flattened one-column Paytm layouts, yearless Paytm dates, legacy `.xls`, scanned PDFs/OCR, and bank-specific layouts that do not match supported structures are rejected or skipped with an explanation. Support is not universal. If amount semantics or columns are ambiguous, verify the exported statement columns instead of relying on guessed mappings.
+- The selected currency (default from Settings) is assigned to generic imports; Paytm `Amount_INR` statements require INR. Identical file bytes cannot be imported twice. Exact duplicate transaction rows in generic formats and repeated Paytm transaction IDs are skipped with a warning.
 - Transactions use decimal arithmetic. Positive signed amounts count as income, negative amounts as expenses; transfers are excluded from income/expense totals. Amount columns without explicit transaction type are treated as signed. This deterministic convention cannot infer every bank's semantics.
 - “Net cash flow” is calculated income minus expenses and is not the same as a bank-reported closing balance. INR, USD, EUR, and GBP can be selected as the statement currency. SpendSense does not infer exchange rates or convert transaction amounts; comparisons across different currencies are rejected.
 
