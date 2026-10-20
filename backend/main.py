@@ -99,7 +99,7 @@ class PostgresConnection:
         return self.connection.execute(self._sql(statement), parameters)
 
     def executemany(self, statement: str, parameters):
-        return self.connection.executemany(self._sql(statement), parameters)
+        return self.connection.cursor().executemany(self._sql(statement), parameters)
 
 
 def _hybrid_row_factory(cursor):

@@ -32,6 +32,31 @@ def test_postgres_adapter_translates_placeholders_and_supports_mapping_and_index
     assert dict(row) == {"count": 7}
 
 
+def test_postgres_adapter_bulk_insert_uses_cursor_executemany():
+    class FakeCursor:
+        def executemany(self, statement, parameters):
+            self.statement = statement
+            self.parameters = parameters
+            return self
+
+    class FakeConnection:
+        def __init__(self):
+            self.cursor_instance = FakeCursor()
+
+        def cursor(self):
+            return self.cursor_instance
+
+    raw = FakeConnection()
+    connection = main.PostgresConnection(raw)
+    rows = [("first-id", "first"), ("second-id", "second")]
+
+    cursor = connection.executemany("INSERT INTO sample(id, value) VALUES(?,?)", rows)
+
+    assert cursor is raw.cursor_instance
+    assert cursor.statement == "INSERT INTO sample(id, value) VALUES(%s,%s)"
+    assert cursor.parameters == rows
+
+
 def test_hybrid_row_factory_handles_statements_without_result_columns():
     class FakeCursor:
         description = None

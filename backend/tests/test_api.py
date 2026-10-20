@@ -1,5 +1,7 @@
 import io
 import json
+import sqlite3
+from contextlib import contextmanager
 from dataclasses import replace
 
 import pytest
@@ -23,6 +25,47 @@ def upload(client, content=SAMPLE, filename="statement.csv"):
     return client.post("/api/imports", files={"file": (filename, content, "text/csv")})
 
 
+def use_postgres_connection_adapter(monkeypatch, database_path):
+    raw_connection = sqlite3.connect(database_path, check_same_thread=False)
+    raw_connection.row_factory = lambda cursor, values: main.HybridRow(
+        zip((column[0] for column in cursor.description), values)
+    )
+    raw_connection.execute("PRAGMA foreign_keys = ON")
+
+    class FakeCursor:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def executemany(self, statement, parameters):
+            return self.connection.raw_connection.cursor().executemany(
+                statement.replace("%s", "?"), parameters
+            )
+
+    class FakePostgresConnection:
+        def __init__(self, connection):
+            self.raw_connection = connection
+
+        def execute(self, statement, parameters=()):
+            return self.raw_connection.execute(statement.replace("%s", "?"), parameters)
+
+        def cursor(self):
+            return FakeCursor(self)
+
+    class FakePool:
+        @contextmanager
+        def connection(self):
+            try:
+                yield FakePostgresConnection(raw_connection)
+                raw_connection.commit()
+            except Exception:
+                raw_connection.rollback()
+                raise
+
+    monkeypatch.setattr(main, "DATABASE_URL", "postgresql://unit-test.invalid/db?sslmode=require")
+    monkeypatch.setattr(main, "_postgres_pool", lambda: FakePool())
+    return raw_connection
+
+
 def test_import_overview_and_transaction_totals(client):
     result = upload(client)
     assert result.status_code == 200, result.text
@@ -35,7 +78,56 @@ def test_import_overview_and_transaction_totals(client):
     assert summary["transaction_count"] == 3
     rows = client.get("/api/transactions", params={"import_id": imported["id"]}).json()
     assert rows["total"] == 3
+    assert {row["description"] for row in rows["items"]} == {
+        "Coffee Shop", "Monthly Salary", "Metro Recharge",
+    }
+    assert {row["currency"] for row in rows["items"]} == {"INR"}
     assert rows["items"][0]["description"] == "Metro Recharge"
+
+
+def test_csv_upload_persists_all_transactions_through_postgres_adapter(client, monkeypatch):
+    raw_connection = use_postgres_connection_adapter(monkeypatch, main.DB_PATH)
+    try:
+        response = client.post(
+            "/api/imports",
+            data={"currency": "USD"},
+            files={"file": ("statement.csv", SAMPLE, "text/csv")},
+        )
+
+        assert response.status_code == 200, response.text
+        imported = response.json()
+        rows = client.get("/api/transactions", params={"import_id": imported["id"]}).json()
+        persisted = {row["description"]: (row["amount"], row["currency"]) for row in rows["items"]}
+
+        assert rows["total"] == 3
+        assert persisted == {
+            "Coffee Shop": ("-250.50", "USD"),
+            "Monthly Salary": ("50000.00", "USD"),
+            "Metro Recharge": ("-100.00", "USD"),
+        }
+    finally:
+        raw_connection.close()
+
+
+def test_failed_transaction_insert_rolls_back_import_and_transactions(client, monkeypatch):
+    raw_connection = use_postgres_connection_adapter(monkeypatch, main.DB_PATH)
+    try:
+        raw_connection.execute(
+            """CREATE TRIGGER reject_transaction_insert
+            BEFORE INSERT ON transactions
+            BEGIN
+                SELECT RAISE(ABORT, 'injected test failure');
+            END"""
+        )
+        raw_connection.commit()
+
+        response = upload(client)
+
+        assert response.status_code == 500
+        assert raw_connection.execute("SELECT COUNT(*) FROM imports").fetchone()[0] == 0
+        assert raw_connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+    finally:
+        raw_connection.close()
 
 
 def test_frontend_root_serves_built_index(client):
