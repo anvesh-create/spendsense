@@ -1,0 +1,13 @@
+node_modules/
+dist/
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+backend/spendsense.db
+backend/uploads/
+backend/reports/
+*.py[cod]
